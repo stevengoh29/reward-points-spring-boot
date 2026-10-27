@@ -9,6 +9,7 @@ import com.example.rewardspoints.points.api.dto.RedeemResponse;
 import com.example.rewardspoints.points.domain.LedgerEntry;
 import com.example.rewardspoints.points.domain.LedgerType;
 import com.example.rewardspoints.points.domain.PointAccount;
+import com.example.rewardspoints.points.exceptions.DuplicateReferenceException;
 import com.example.rewardspoints.points.exceptions.InsufficientBalanceException;
 import com.example.rewardspoints.points.exceptions.InvalidAmountException;
 import com.example.rewardspoints.points.infrastructure.LedgerEntryRepository;
@@ -57,9 +58,10 @@ public class PointsService {
         return withRetry(() -> transactionTemplate.execute(status -> {
             PointAccount account = accountRepository.findByUserId(request.userId())
                     .orElseGet(() -> PointAccount.openAccount(request.userId()));
+            rejectIfAlreadyRecorded(account, LedgerType.EARN, request.referenceId());
             account.add(points);
             PointAccount saved = accountRepository.saveAndFlush(account);
-            LedgerEntry entry = ledgerRepository.save(
+            LedgerEntry entry = ledgerRepository.saveAndFlush(
                     LedgerEntry.create(saved.getId(), LedgerType.EARN, points, request.referenceId(), null, null));
             return new EarnResponse(entry.getId(), points, saved.getBalance());
         }));
@@ -71,9 +73,10 @@ public class PointsService {
             PointAccount account = accountRepository.findByUserId(request.userId())
                     // no account yet means a balance of 0
                     .orElseThrow(() -> new InsufficientBalanceException(0, request.points()));
+            rejectIfAlreadyRecorded(account, LedgerType.REDEEM, request.referenceId());
             account.deduct(request.points());
             PointAccount saved = accountRepository.saveAndFlush(account);
-            LedgerEntry entry = ledgerRepository.save(
+            LedgerEntry entry = ledgerRepository.saveAndFlush(
                     LedgerEntry.create(saved.getId(), LedgerType.REDEEM, -request.points(), request.referenceId(), null, null));
             return new RedeemResponse(entry.getId(), request.points(), saved.getBalance());
         }));
@@ -95,8 +98,22 @@ public class PointsService {
     }
 
     /**
-     * Re-runs the unit of work when it lost a race: a stale {@code @Version} on the account, or a second
-     * transaction opening the same user's first account (unique user_id). Business errors are not retried.
+     * A client retry must not apply twice. This check gives the friendly 409; the partial unique index on
+     * ledger_entries is the guarantee. If two identical requests race past this check, the loser hits the
+     * index, is retried by {@link #withRetry}, and then lands here.
+     */
+    private void rejectIfAlreadyRecorded(PointAccount account, LedgerType type, String referenceId) {
+        // a brand-new accoun t has no entries yet
+        if (account.getId() != null
+                && ledgerRepository.existsByPointAccountIdAndTypeAndReferenceId(account.getId(), type, referenceId)) {
+            throw new DuplicateReferenceException(type, referenceId);
+        }
+    }
+
+    /**
+     * Re-runs the unit of work when it lost a race: a stale {@code @Version} on the account, a second
+     * transaction opening the same user's first account (unique user_id), or an identical request committing
+     * first (unique reference). Business errors are not retried.
      */
     private <T> T withRetry(Supplier<T> unitOfWork) {
         for (int attempt = 1; ; attempt++) {

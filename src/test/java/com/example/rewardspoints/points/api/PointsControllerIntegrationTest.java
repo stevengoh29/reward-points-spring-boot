@@ -289,6 +289,80 @@ class PointsControllerIntegrationTest {
         assertThat(ledgerRepository.count()).isEqualTo(1);
     }
 
+    @Test
+    void earn_sameReferenceTwice_returns409_andAwardsOnlyOnce() throws Exception {
+        UUID user = newUser("alice@example.com");
+        earn(user, 2_000, "order-1").andExpect(status().isOk());
+
+        earn(user, 2_000, "order-1")
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("POINTS_DUPLICATE_REFERENCE"));
+
+        balance(user).andExpect(jsonPath("$.balance").value(20));
+        assertThat(ledgerRepository.count()).isEqualTo(1);
+    }
+
+    @Test
+    void earn_sameReferenceWithDifferentAmount_isStillADuplicate() throws Exception {
+        UUID user = newUser("alice@example.com");
+        earn(user, 2_000, "order-1").andExpect(status().isOk());
+
+        earn(user, 9_000, "order-1").andExpect(status().isConflict());
+
+        balance(user).andExpect(jsonPath("$.balance").value(20));
+    }
+
+    @Test
+    void redeem_sameReferenceTwice_returns409_andSpendsOnlyOnce() throws Exception {
+        UUID user = newUser("alice@example.com");
+        earn(user, 10_000, "order-1");
+        redeem(user, 30, "reward-1").andExpect(status().isOk());
+
+        redeem(user, 30, "reward-1")
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("POINTS_DUPLICATE_REFERENCE"));
+
+        balance(user).andExpect(jsonPath("$.balance").value(70));
+        assertThat(ledgerRepository.count()).isEqualTo(2);
+    }
+
+    @Test
+    void sameReference_isFineAcrossTypesAndAcrossUsers() throws Exception {
+        UUID alice = newUser("alice@example.com");
+        UUID bob = newUser("bob@example.com");
+
+        earn(alice, 10_000, "ref-1").andExpect(status().isOk());
+        redeem(alice, 10, "ref-1").andExpect(status().isOk());   // same reference, other type
+        earn(bob, 10_000, "ref-1").andExpect(status().isOk());   // same reference, other user
+
+        balance(alice).andExpect(jsonPath("$.balance").value(90));
+        balance(bob).andExpect(jsonPath("$.balance").value(100));
+    }
+
+    @Test
+    void database_rejectsDuplicateEarnAndRedeemReferences_butAllowsReversalsAndAdjustments() {
+        UUID user = newUserDirect("alice@example.com");
+        UUID account = accountRepository.saveAndFlush(PointAccount.openAccount(user)).getId();
+
+        insertEntry(account, "EARN", 10, "ref", null);
+        assertThatThrownBy(() -> insertEntry(account, "EARN", 10, "ref", null))
+                .hasMessageContaining("ux_ledger_entries_account_type_reference");
+        insertEntry(account, "REDEEM", -5, "ref", null);
+        assertThatThrownBy(() -> insertEntry(account, "REDEEM", -5, "ref", null))
+                .hasMessageContaining("ux_ledger_entries_account_type_reference");
+
+        // corrections reuse the original reference by design
+        insertEntry(account, "REVERSAL", -10, "ref", null);
+        insertEntry(account, "REVERSAL", -10, "ref", null);
+        insertEntry(account, "ADJUSTMENT", 3, "ref", "goodwill");
+        insertEntry(account, "ADJUSTMENT", 3, "ref", "goodwill");
+    }
+
+    private void insertEntry(UUID accountId, String type, long amount, String reference, String description) {
+        jdbc.update("INSERT INTO ledger_entries (id, account_id, type, amount, reference_id, description, created_at) "
+                + "VALUES (gen_random_uuid(), ?, ?, ?, ?, ?, now())", accountId, type, amount, reference, description);
+    }
+
     private UUID newUser(String email) {
         return newUserDirect(email);
     }

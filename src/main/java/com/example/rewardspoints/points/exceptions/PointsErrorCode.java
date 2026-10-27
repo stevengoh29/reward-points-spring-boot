@@ -9,6 +9,7 @@ import lombok.RequiredArgsConstructor;
 public enum PointsErrorCode implements ErrorCode {
     INSUFFICIENT_BALANCE(ErrorCategory.BUSINESS_RULE),
     ACCOUNT_NOT_FOUND(ErrorCategory.NOT_FOUND),
+    DUPLICATE_REFERENCE(ErrorCategory.CONFLICT),
     INVALID_AMOUNT(ErrorCategory.VALIDATION);
 
     private final ErrorCategory category;

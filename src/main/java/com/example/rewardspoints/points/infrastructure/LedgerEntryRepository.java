@@ -1,6 +1,7 @@
 package com.example.rewardspoints.points.infrastructure;
 
 import com.example.rewardspoints.points.domain.LedgerEntry;
+import com.example.rewardspoints.points.domain.LedgerType;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -11,6 +12,8 @@ import java.util.UUID;
 
 @Repository
 public interface LedgerEntryRepository extends JpaRepository<LedgerEntry, UUID> {
+
+    boolean existsByPointAccountIdAndTypeAndReferenceId(UUID pointAccountId, LedgerType type, String referenceId);
 
     Page<LedgerEntry> findByPointAccountId(UUID pointAccountId, Pageable pageable);
 
